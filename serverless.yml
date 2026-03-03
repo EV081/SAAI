@@ -1,0 +1,983 @@
+org: julio123
+service: saai-backend
+
+provider:
+  name: aws
+  runtime: python3.10
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  
+  # AWS Academy Configuration - LabRole
+  iam:
+    role: arn:aws:iam::826182812030:role/LabRole
+  
+  # ECR Configuration para Docker Lambda (ML)
+  ecr:
+    images:
+      ml-image:
+        path: ./
+        file: ml/Dockerfile
+        platform: linux/amd64
+  
+  environment:
+    STAGE: ${self:provider.stage}
+    REGION: ${self:provider.region}
+    ACCOUNT_ID: "826182812030"
+    # DynamoDB Tables
+    TIENDAS_TABLE: ${self:service}-${self:provider.stage}-tiendas
+    USUARIOS_TABLE: ${self:service}-${self:provider.stage}-usuarios
+    PRODUCTOS_TABLE: ${self:service}-${self:provider.stage}-productos
+    VENTAS_TABLE: ${self:service}-${self:provider.stage}-ventas
+    GASTOS_TABLE: ${self:service}-${self:provider.stage}-gastos
+    NOTIFICACIONES_TABLE: ${self:service}-${self:provider.stage}-notificaciones
+    ANALITICA_TABLE: ${self:service}-${self:provider.stage}-analitica
+    REPORTES_TABLE: ${self:service}-${self:provider.stage}-reportes
+    PREDICCIONES_TABLE: ${self:service}-${self:provider.stage}-predicciones
+    TOKENS_TRABAJADORES_TABLE: ${self:service}-${self:provider.stage}-tokens-trabajadores
+    TOKENS_ADMINISTRADORES_TABLE: ${self:service}-${self:provider.stage}-tokens-administradores
+    TOKENS_SAAI_TABLE: ${self:service}-${self:provider.stage}-tokens-saai
+    COUNTERS_TABLE: ${self:service}-${self:provider.stage}-counters
+    WS_CONNECTIONS_TABLE: ${self:service}-${self:provider.stage}-ws-connections
+    # SNS Topics
+    ALERTAS_SNS_TOPIC_ARN:
+      Ref: AlertasSaaiTopic
+    BIENVENIDA_SNS_TOPIC_ARN:
+      Ref: BienvenidaSaaiTopic
+    # S3 Bucket
+    S3_BUCKET: saai-tiendas-${self:provider.stage}
+    # WebSocket API
+    WS_API_ENDPOINT: 
+      Fn::Join:
+        - ""
+        - - "https://"
+          - Ref: WebSocketApi
+          - ".execute-api.${self:provider.region}.amazonaws.com/${self:provider.stage}/@connections"
+    # JWT
+    JWT_SECRET: ${env:JWT_SECRET, 'saai-secret-key-2025'}
+    JWT_EXPIRES_IN: 86400 # 24 horas
+    # Restricciones de rutas por rol
+    RESTRICTED_PATHS_WORKER: /gastos,/analytics,/reportes
+    # Lambda ARNs para invocaciones internas
+    EMITIR_EVENTOS_WS_FUNCTION_NAME: "${self:service}-${self:provider.stage}-EmitirEventosWs"
+    EMITIR_EVENTOS_WS_FUNCTION_ARN:
+      Fn::Join:
+        - ":"
+        - - "arn:aws:lambda"
+          - ${self:provider.region}
+          - Ref: AWS::AccountId
+          - "function"
+          - "${self:service}-${self:provider.stage}-EmitirEventosWs"
+
+custom:
+  pythonRequirements:
+    dockerizePip: false
+    noDeploy:
+      - boto3
+      - botocore
+
+functions:
+  # =================================================================
+  # SETUP INICIAL (EJECUTAR SOLO UNA VEZ DESPUÉS DEL DEPLOY)
+  # =================================================================
+  SeedUsuarioSaai:
+    handler: setup/seed_usuario_saai.handler
+    description: Crea usuario SAAI inicial en DynamoDB (ejecutar 1 vez)
+    timeout: 10
+    events:
+      - http:
+          path: /setup/seed-usuario-saai
+          method: post
+          cors: true
+
+  # =================================================================
+  # AUTHORIZER (CRITICO - TODAS LAS RUTAS PRIVADAS DEPENDEN DE ESTO)
+  # =================================================================
+  authorizer:
+    handler: auth/authorizer.handler
+    description: Lambda Authorizer para validación JWT multi-tenant
+
+  # =================================================================
+  # AUTH - LOGIN (PÚBLICO - 3 ROLES)
+  # =================================================================
+  LoginUsuario:
+    handler: auth/login.handler
+    description: Autenticación de usuarios (worker/admin/saai)
+    events:
+      - http:
+          path: /login
+          method: post
+          cors: true
+
+  # =================================================================
+  # TRABAJADOR - PRODUCTOS
+  # =================================================================
+  CrearProducto:
+    handler: productos/crear_producto.handler
+    description: Crear nuevo producto en la tienda
+    events:
+      - http:
+          path: /productos
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  ListarProductos:
+    handler: productos/listar_productos.handler
+    description: Listar productos de la tienda con paginación
+    events:
+      - http:
+          path: /productos
+          method: get
+          cors: true
+          authorizer: authorizer
+
+  BuscarProductos:
+    handler: productos/buscar_productos.handler
+    description: Buscar productos por código, nombre o categoría
+    events:
+      - http:
+          path: /productos/buscar
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  ActualizarProducto:
+    handler: productos/actualizar_producto.handler
+    description: Actualizar información de producto
+    events:
+      - http:
+          path: /productos/{codigo_producto}
+          method: put
+          cors: true
+          authorizer: authorizer
+
+  EliminarProducto:
+    handler: productos/eliminar_producto.handler
+    description: Eliminar producto (soft delete)
+    events:
+      - http:
+          path: /productos/{codigo_producto}
+          method: delete
+          cors: true
+          authorizer: authorizer
+
+  # =================================================================
+  # TRABAJADOR - VENTAS
+  # =================================================================
+  CalcularMonto:
+    handler: ventas/calcular_monto.handler
+    description: Calcular monto de venta sin registrarla
+    events:
+      - http:
+          path: /ventas/calcular
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  RegistrarVenta:
+    handler: ventas/registrar_venta.handler
+    description: Registrar venta, descuenta stock, SNS + WebSocket
+    events:
+      - http:
+          path: /ventas
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  ListarVentas:
+    handler: ventas/listar_ventas.handler
+    description: Listar ventas de la tienda con paginación
+    events:
+      - http:
+          path: /ventas
+          method: get
+          cors: true
+          authorizer: authorizer
+
+  BuscarVenta:
+    handler: ventas/buscar_venta.handler
+    description: Buscar ventas por código o fecha
+    events:
+      - http:
+          path: /ventas/buscar
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  # =================================================================
+  # FASE 4: MÓDULOS CON DEPENDENCIAS
+  # =================================================================
+
+  # =================================================================
+  # ADMIN - GASTOS
+  # =================================================================
+  CrearGasto:
+    handler: gastos/crear_gasto.handler
+    description: Crear nuevo gasto de la tienda
+    events:
+      - http:
+          path: /gastos
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  ListarGastos:
+    handler: gastos/listar_gastos.handler
+    description: Listar gastos de la tienda con paginación
+    events:
+      - http:
+          path: /gastos
+          method: get
+          cors: true
+          authorizer: authorizer
+
+  BuscarGasto:
+    handler: gastos/buscar_gasto.handler
+    description: Buscar gastos por criterios
+    events:
+      - http:
+          path: /gastos/buscar
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  ActualizarGasto:
+    handler: gastos/actualizar_gasto.handler
+    description: Actualizar información de gasto
+    events:
+      - http:
+          path: /gastos/{codigo_gasto}
+          method: put
+          cors: true
+          authorizer: authorizer
+
+  EliminarGasto:
+    handler: gastos/eliminar_gasto.handler
+    description: Eliminar gasto (soft delete)
+    events:
+      - http:
+          path: /gastos/{codigo_gasto}
+          method: delete
+          cors: true
+          authorizer: authorizer
+
+  # =================================================================
+  # ADMIN - USUARIOS
+  # =================================================================
+  CrearUsuario:
+    handler: usuarios/crear_usuario.handler
+    description: Crear nuevo usuario de la tienda
+    events:
+      - http:
+          path: /usuarios
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  ListarUsuarios:
+    handler: usuarios/listar_usuarios.handler
+    description: Listar usuarios de la tienda con paginación
+    events:
+      - http:
+          path: /usuarios
+          method: get
+          cors: true
+          authorizer: authorizer
+
+  BuscarUsuario:
+    handler: usuarios/buscar_usuario.handler
+    description: Buscar usuarios por query
+    events:
+      - http:
+          path: /usuarios/buscar
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  ActualizarUsuario:
+    handler: usuarios/actualizar_usuario.handler
+    description: Actualizar información de usuario
+    events:
+      - http:
+          path: /usuarios/{codigo_usuario}
+          method: put
+          cors: true
+          authorizer: authorizer
+
+  EliminarUsuario:
+    handler: usuarios/eliminar_usuario.handler
+    description: Eliminar usuario (soft delete)
+    events:
+      - http:
+          path: /usuarios/{codigo_usuario}
+          method: delete
+          cors: true
+          authorizer: authorizer
+
+  # =================================================================
+  # FASE 6: MÓDULOS AVANZADOS
+  # =================================================================
+
+  # =================================================================
+  # ADMIN - ANALÍTICA
+  # =================================================================
+  ActualizarAnalitica:
+    handler: analytics/actualizar_analitica.handler
+    description: Procesa TODAS las tiendas activas - EventBridge ONLY
+    timeout: 60
+    events:
+      # HTTP endpoint DESHABILITADO - solo EventBridge
+      # - http:
+      #     path: /analitica
+      #     method: post
+      #     cors: true
+      #     authorizer: authorizer
+      - schedule:
+          rate: rate(4 hours)
+          enabled: true
+          description: "Actualizar analítica automáticamente para todas las tiendas activas"
+
+  VerAnalitica:
+    handler: analytics/ver_analitica.handler
+    description: Consultar métricas calculadas (dashboard)
+    events:
+      - http:
+          path: /analitica
+          method: get
+          cors: true
+          authorizer: authorizer
+
+  # =================================================================
+  # ADMIN - REPORTES (S3 + Excel)
+  # =================================================================
+  GenerarReporteInventario:
+    handler: reportes/generar_reporte_inventario.handler
+    description: Generar reporte Excel de inventario en S3
+    timeout: 60
+    events:
+      - http:
+          path: /reportes/inventario
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  GenerarReporteVentas:
+    handler: reportes/generar_reporte_ventas.handler
+    description: Generar reporte Excel de ventas en S3
+    timeout: 60
+    events:
+      - http:
+          path: /reportes/ventas
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  GenerarReporteGastos:
+    handler: reportes/generar_reporte_gastos.handler
+    description: Generar reporte Excel de gastos en S3
+    timeout: 60
+    events:
+      - http:
+          path: /reportes/gastos
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  GenerarReporteGeneral:
+    handler: reportes/generar_reporte_general.handler
+    description: Generar reporte Excel combinado en S3
+    timeout: 60
+    events:
+      - http:
+          path: /reportes/general
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  ListarHistorialReportes:
+    handler: reportes/listar_historial_reportes.handler
+    description: Listar historial de reportes con presigned URLs
+    events:
+      - http:
+          path: /reportes/historial
+          method: get
+          cors: true
+          authorizer: authorizer
+
+  # =================================================================
+
+  # SAAI - GESTIÓN DE TIENDAS
+  # =================================================================
+  RegistrarTienda:
+    handler: tiendas/registrar_tienda.handler
+    description: Registrar nueva tienda + admin inicial + SNS bienvenida
+    events:
+      - http:
+          path: /tiendas
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  ListarTiendas:
+    handler: tiendas/listar_tiendas.handler
+    description: Listar tiendas registradas con paginación
+    events:
+      - http:
+          path: /tiendas
+          method: get
+          cors: true
+          authorizer: authorizer
+
+  BuscarTienda:
+    handler: tiendas/buscar_tienda.handler
+    description: Buscar tiendas por query
+    events:
+      - http:
+          path: /tiendas/buscar
+          method: post
+          cors: true
+          authorizer: authorizer
+
+  ActualizarTienda:
+    handler: tiendas/actualizar_tienda.handler
+    description: Actualizar información de tienda
+    events:
+      - http:
+          path: /tiendas/{codigo_tienda}
+          method: put
+          cors: true
+          authorizer: authorizer
+
+  EliminarTienda:
+    handler: tiendas/eliminar_tienda.handler
+    description: Eliminar tienda (soft delete)
+    events:
+      - http:
+          path: /tiendas/{codigo_tienda}
+          method: delete
+          cors: true
+          authorizer: authorizer
+
+  # =================================================================
+  # NOTIFICACIONES
+  # =================================================================
+  ListarNotificaciones:
+    handler: notificaciones/listarNotificaciones.handler
+    description: Listar notificaciones del usuario
+    events:
+      - http:
+          path: /notificacion
+          method: get
+          cors: true
+          authorizer: authorizer
+
+  # =================================================================
+  # SNS CONSUMERS (INTERNOS)
+  # =================================================================
+  GuardarNotificacion:
+    handler: notificaciones/guardarNotificacion.handler
+    description: Consumidor SNS - guarda alertas en t_notificaciones
+    events:
+      - sns:
+          arn: arn:aws:sns:${self:provider.region}:${self:provider.environment.ACCOUNT_ID}:AlertasSAAI-${self:provider.stage}
+
+  # Bienvenida consumers
+  # correoBienvenida: # DESHABILITADO - No disponible SES en AWS Academy
+  #   handler: welcome/correo_bienvenida.handler
+  #   description: Consumidor SNS - envía correo de bienvenida
+  #   events:
+  #     - sns:
+  #         arn: arn:aws:sns:${self:provider.region}:${self:provider.environment.ACCOUNT_ID}:BienvenidaSAAI-${self:provider.stage}
+
+  # =================================================================
+  # WEBSOCKET API (TIEMPO REAL)
+  # =================================================================
+  OnConnect:
+    handler: websockets/on_connect.handler
+    description: WebSocket - Registrar conexión
+    events:
+      - websocket:
+          route: $connect
+
+  OnDisconnect:
+    handler: websockets/on_disconnect.handler
+    description: WebSocket - Limpiar conexión
+    events:
+      - websocket:
+          route: $disconnect
+
+  EmitirEventosWs:
+    handler: websockets/emitir_eventos_ws.handler
+    description: Emitir eventos WebSocket a conexiones de tienda
+
+  # =================================================================
+  # FASE 5: SERVICIOS SNS Y NOTIFICACIONES
+  # =================================================================
+
+  # =================================================================
+  # SISTEMA DE BIENVENIDA - Topic BienvenidaSAAI
+  # =================================================================
+  # correoBienvenida: # DESHABILITADO - No disponible SES en AWS Academy
+  #   handler: welcome/correoBienvenida.handler
+  #   description: SNS→Lambda - Enviar correo bienvenida a nueva tienda
+  #   events:
+  #     - sns:
+  #         arn:
+  #           Ref: BienvenidaSaaiTopic
+  #         topicName: BienvenidaSAAI-${self:provider.stage}
+
+  CrearCarpetaS3:
+    handler: welcome/crearCarpetaS3.handler
+    description: SNS→Lambda - Crear estructura S3 para nueva tienda
+    events:
+      - sns:
+          arn:
+            Ref: BienvenidaSaaiTopic
+          topicName: BienvenidaSAAI-${self:provider.stage}
+
+  SuscribirSnsAlerta:
+    handler: welcome/suscribirSnsAlerta.handler
+    description: SNS→Lambda - Crear suscripción EMAIL a AlertasSAAI
+    events:
+      - sns:
+          arn:
+            Ref: BienvenidaSaaiTopic
+          topicName: BienvenidaSAAI-${self:provider.stage}
+
+  # =================================================================
+  # MACHINE LEARNING - PREDICCIÓN DEMANDA
+  # =================================================================
+  
+  EntrenarModelos:
+    image:
+      name: ml-image
+      command:
+        - entrenar_modelos.handler
+    description: Entrena modelos Holt-Winters para productos activos (cada 3 días)
+    timeout: 900  # 15 minutos
+    memorySize: 1024
+    environment:
+      ALERTAS_SNS_TOPIC_ARN:
+        Ref: AlertasSaaiTopic
+      EMITIR_EVENTOS_WS_FUNCTION_NAME: "${self:service}-${self:provider.stage}-EmitirEventosWs"
+    events:
+      - schedule:
+          name: ${self:service}-${self:provider.stage}-EntrenarModelosCada3Dias
+          description: Re-entrena modelos ML cada 3 días
+          rate: rate(3 days)
+          enabled: true
+
+  # =================================================================
+  # PREDICCIONES BATCH - ARQUITECTURA SQS
+  # =================================================================
+  
+  OrquestarPrediccionesDiarias:
+    handler: ml.orquestar_predicciones_diarias.handler
+    description: Orquestador - lista tiendas y encola en SQS
+    timeout: 60
+    memorySize: 256
+    environment:
+      PREDICCIONES_QUEUE_URL:
+        Ref: PrediccionesSQSQueue
+    events:
+      - schedule:
+          name: ${self:service}-${self:provider.stage}-PrediccionesDiarias
+          description: "Genera predicciones diarias a las 2:00 AM Lima (7:00 UTC)"
+          rate: cron(0 7 * * ? *)
+          enabled: true
+
+  GenerarPrediccionesPorTienda:
+    image:
+      name: ml-image
+      command:
+        - generar_predicciones_por_tienda.handler
+    description: Worker - procesa 1 tienda desde SQS
+    timeout: 900  # 15 minutos
+    memorySize: 2048
+    environment:
+      ALERTAS_SNS_TOPIC_ARN:
+        Ref: AlertasSaaiTopic
+      EMITIR_EVENTOS_WS_FUNCTION_NAME: "${self:service}-${self:provider.stage}-EmitirEventosWs"
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - PrediccionesSQSQueue
+              - Arn
+          batchSize: 1  # 1 mensaje = 1 tienda por ejecución
+
+  ListarPredicciones:
+    handler: ml.listar_predicciones.handler
+    description: GET /predicciones - lista predicciones con paginación
+    timeout: 30
+    memorySize: 512
+    events:
+      - http:
+          path: /predicciones
+          method: get
+          cors: true
+          authorizer: authorizer
+
+  BuscarPredicciones:
+    handler: ml.buscar_predicciones.handler
+    description: POST /predicciones/buscar - busca con filtros
+    timeout: 30
+    memorySize: 512
+    events:
+      - http:
+          path: /predicciones/buscar
+          method: post
+          cors: true
+          authorizer: authorizer
+
+resources:
+  Resources:
+    # =================================================================
+    # DYNAMODB TABLES (MODELO ESTÁNDAR: tenant_id + entity_id + data)
+    # =================================================================
+    TiendasTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TIENDAS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    UsuariosTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.USUARIOS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    ProductosTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.PRODUCTOS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    VentasTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.VENTAS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    GastosTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.GASTOS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    NotificacionesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.NOTIFICACIONES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    AnaliticaTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.ANALITICA_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    ReportesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.REPORTES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    PrediccionesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.PREDICCIONES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    TokensTrabajadoresTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TOKENS_TRABAJADORES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    TokensAdministradoresTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TOKENS_ADMINISTRADORES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    TokensSaaiTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TOKENS_SAAI_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    CountersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.COUNTERS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+
+    WsConnectionsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.WS_CONNECTIONS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+        TimeToLiveSpecification:
+          AttributeName: ttl
+          Enabled: true
+
+    # =================================================================
+    # TABLA PREDICCIONES ML (CACHE)
+    # =================================================================
+    TPrediccionesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: t_predicciones
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: entity_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: entity_id
+            KeyType: RANGE
+        TimeToLiveSpecification:
+          AttributeName: ttl
+          Enabled: true
+
+    # =================================================================
+    # SNS TOPICS
+    # =================================================================
+    AlertasSaaiTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: AlertasSAAI-${self:provider.stage}
+        DisplayName: "SAAI - Alertas del Sistema"
+
+    BienvenidaSaaiTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: BienvenidaSAAI-${self:provider.stage}
+        DisplayName: "SAAI - Bienvenida Nuevas Tiendas"
+
+    # =================================================================
+    # SQS QUEUE - PREDICCIONES MASIVAS
+    # =================================================================
+    PrediccionesSQSQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-predicciones-queue
+        VisibilityTimeout: 900  # 15 minutos (timeout de worker)
+        MessageRetentionPeriod: 86400  # 24 horas
+        ReceiveMessageWaitTimeSeconds: 20  # Long polling
+        RedrivePolicy:
+          deadLetterTargetArn:
+            Fn::GetAtt:
+              - PrediccionesDLQ
+              - Arn
+          maxReceiveCount: 3  # 3 intentos antes de DLQ
+
+    PrediccionesDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-predicciones-dlq
+        MessageRetentionPeriod: 1209600  # 14 días
+
+    # =================================================================
+    # S3 BUCKET
+    # =================================================================
+    SaaiTiendasBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.S3_BUCKET}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ['*']
+              AllowedMethods: [GET, HEAD]
+              AllowedOrigins: ['*']
+              MaxAge: 3000
+
+    # =================================================================
+    # WEBSOCKET API
+    # =================================================================
+    WebSocketApi:
+      Type: AWS::ApiGatewayV2::Api
+      Properties:
+        Name: saai-websocket-${self:provider.stage}
+        ProtocolType: WEBSOCKET
+        RouteSelectionExpression: $request.body.action
+
+  Outputs:
+    RestApiId:
+      Value:
+        Ref: ApiGatewayRestApi
+      Export:
+        Name: ${self:service}-${self:provider.stage}-RestApiId
+
+    WebSocketApiId:
+      Value:
+        Ref: WebSocketApi
+      Export:
+        Name: ${self:service}-${self:provider.stage}-WebSocketApiId
+
+    AlertasSaaiTopicArn:
+      Value:
+        Ref: AlertasSaaiTopic
+      Export:
+        Name: ${self:service}-${self:provider.stage}-AlertasSaaiTopicArn
+
+    BienvenidaSaaiTopicArn:
+      Value:
+        Ref: BienvenidaSaaiTopic
+      Export:
+        Name: ${self:service}-${self:provider.stage}-BienvenidaSaaiTopicArn
+
+    S3BucketName:
+      Value:
+        Ref: SaaiTiendasBucket
+      Export:
+        Name: ${self:service}-${self:provider.stage}-S3BucketName
