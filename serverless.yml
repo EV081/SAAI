@@ -1,4 +1,4 @@
-org: julio123
+org: ${env:SERVERLESS_ORG}
 service: saai-backend
 
 provider:
@@ -9,7 +9,7 @@ provider:
   
   # AWS Academy Configuration - LabRole
   iam:
-    role: arn:aws:iam::826182812030:role/LabRole
+    role: arn:aws:iam::${env:ACCOUNT_ID}:role/LabRole
   
   # ECR Configuration para Docker Lambda (ML)
   ecr:
@@ -22,7 +22,7 @@ provider:
   environment:
     STAGE: ${self:provider.stage}
     REGION: ${self:provider.region}
-    ACCOUNT_ID: "826182812030"
+    ACCOUNT_ID: ${env:ACCOUNT_ID}
     # DynamoDB Tables
     TIENDAS_TABLE: ${self:service}-${self:provider.stage}-tiendas
     USUARIOS_TABLE: ${self:service}-${self:provider.stage}-usuarios
