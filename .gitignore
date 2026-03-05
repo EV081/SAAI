@@ -1,0 +1,71 @@
+# =============================================================================
+# SAAI Backend - .gitignore
+# =============================================================================
+
+# ---- Variables de entorno (NUNCA subir al repo) ----
+.env
+.env.local
+.env.*.local
+
+# ---- Serverless Framework ----
+.serverless/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.Python
+env/
+venv/
+.venv/
+ENV/
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+
+# ---- Node.js ----
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# ---- Docker ----
+*.dockerignore
+
+# ---- AWS / Terraform ----
+*.tfstate
+*.tfstate.backup
+.terraform/
+terraform.tfvars
+*.tfvars
+
+# ---- IDE / Editores ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Logs ----
+logs/
+*.log
+
+# ---- Reportes / Outputs temporales ----
+*.xlsx
+*.csv
+/tmp/
