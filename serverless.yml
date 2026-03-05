@@ -9,7 +9,7 @@ provider:
   
   # AWS Academy Configuration - LabRole
   iam:
-    role: arn:aws:iam::${env:ACCOUNT_ID}:role/LabRole
+    role: arn:aws:iam::${env:AWS_ACCOUNT_ID}:role/LabRole
   
   # ECR Configuration para Docker Lambda (ML)
   ecr:
@@ -22,7 +22,7 @@ provider:
   environment:
     STAGE: ${self:provider.stage}
     REGION: ${self:provider.region}
-    ACCOUNT_ID: ${env:ACCOUNT_ID}
+    ACCOUNT_ID: ${env:AWS_ACCOUNT_ID}
     # DynamoDB Tables
     TIENDAS_TABLE: ${self:service}-${self:provider.stage}-tiendas
     USUARIOS_TABLE: ${self:service}-${self:provider.stage}-usuarios
